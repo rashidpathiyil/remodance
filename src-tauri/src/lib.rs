@@ -260,15 +260,51 @@ fn open_settings(_app_handle: AppHandle) -> Result<(), String> {
 /// Save application settings
 #[tauri::command]
 fn save_settings(settings: Settings, state: State<Arc<AppState>>) -> Result<(), String> {
-    // Update settings in state
-    {
-        let mut current_settings = state.settings.lock().unwrap();
-        *current_settings = settings;
-    }
-    
-    // In a real implementation, save settings to disk
+    let mut settings_lock = state.settings.lock().unwrap();
+    *settings_lock = settings;
     
     Ok(())
+}
+
+// Configure auto launch
+fn configure_auto_launch(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+    
+    let autostart_manager = app.autolaunch();
+    
+    // Enable auto-launch by default
+    if let Ok(false) = autostart_manager.is_enabled() {
+        let _ = autostart_manager.enable();
+    }
+    
+    Ok(())
+}
+
+// Check if auto-launch is enabled
+#[tauri::command]
+fn is_auto_launch_enabled(app_handle: AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    
+    let autostart_manager = app_handle.autolaunch();
+    
+    autostart_manager.is_enabled()
+        .map_err(|err| format!("Failed to check auto-launch status: {}", err))
+}
+
+// Toggle auto-launch
+#[tauri::command]
+fn toggle_auto_launch(app_handle: AppHandle, enable: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    
+    let autostart_manager = app_handle.autolaunch();
+    
+    if enable {
+        autostart_manager.enable()
+            .map_err(|err| format!("Failed to enable auto-launch: {}", err))
+    } else {
+        autostart_manager.disable()
+            .map_err(|err| format!("Failed to disable auto-launch: {}", err))
+    }
 }
 
 // Application entry point
@@ -279,10 +315,19 @@ pub fn run() {
     
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None // No extra args
+        ))
         .setup(|app| {
             // Start idle monitor
             let app_handle = app.handle().clone(); // Clone to get owned AppHandle
             start_idle_monitor(app_handle);
+            
+            // Configure auto-launch
+            if let Err(err) = configure_auto_launch(app) {
+                eprintln!("Failed to configure auto-launch: {}", err);
+            }
             
             Ok(())
         })
@@ -294,6 +339,8 @@ pub fn run() {
             get_app_version,
             open_settings,
             save_settings,
+            is_auto_launch_enabled,
+            toggle_auto_launch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

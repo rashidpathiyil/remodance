@@ -10,6 +10,7 @@ const isAutoMode = ref(true);
 const lastActivityTime = ref(new Date());
 const appVersion = ref("");
 const showSettings = ref(false);
+const isAutoLaunchEnabled = ref(true);
 
 // Settings form
 const settings = reactive({
@@ -70,8 +71,32 @@ async function initApp() {
     // Check initial status
     const status = await invoke("get_attendance_status");
     isCheckedIn.value = status === "checked-in";
+    
+    // Get auto-launch status
+    checkAutoLaunchStatus();
   } catch (error) {
     console.error("Failed to initialize app:", error);
+  }
+}
+
+// Check auto-launch status
+async function checkAutoLaunchStatus() {
+  try {
+    const enabled = await invoke("is_auto_launch_enabled");
+    isAutoLaunchEnabled.value = enabled as boolean;
+  } catch (error) {
+    console.error("Failed to check auto-launch status:", error);
+  }
+}
+
+// Toggle auto-launch
+async function toggleAutoLaunch() {
+  try {
+    const newStatus = !isAutoLaunchEnabled.value;
+    await invoke("toggle_auto_launch", { enable: newStatus });
+    isAutoLaunchEnabled.value = newStatus;
+  } catch (error) {
+    console.error("Failed to toggle auto-launch:", error);
   }
 }
 
@@ -164,6 +189,11 @@ onMounted(() => {
         <div class="form-group">
           <label for="deviceName">Device Name</label>
           <input id="deviceName" v-model="settings.deviceName" type="text" />
+        </div>
+        
+        <div class="form-group form-checkbox">
+          <input id="autoLaunch" v-model="isAutoLaunchEnabled" type="checkbox" @change="toggleAutoLaunch" />
+          <label for="autoLaunch">Launch on startup</label>
         </div>
         
         <div class="form-group form-checkbox">
