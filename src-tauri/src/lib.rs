@@ -6,7 +6,7 @@ use tokio::time;
 use user_idle::UserIdle;
 use chrono::{DateTime, Utc};
 use serde_json;
-use log::{info, warn, error, debug};
+use log::{info, error, debug};
 
 // Attendance status
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -85,6 +85,47 @@ struct ConfigData {
     auto_mode: bool,
 }
 
+// Helper to create the current ISO timestamp
+fn iso_timestamp() -> String {
+    chrono::Utc::now().to_rfc3339()
+}
+
+// Format current time as HH:MM:SS
+fn format_current_time() -> String {
+    use chrono::Local;
+    Local::now().format("%H:%M:%S").to_string()
+}
+
+// Format current date as YYYY-MM-DD
+fn format_current_date() -> String {
+    use chrono::Local;
+    Local::now().format("%Y-%m-%d").to_string()
+}
+
+// Create attendance payload from settings
+fn create_attendance_payload(event_type: &str, settings: &Settings) -> AttendancePayload {
+    let config = if settings.developer_mode {
+        Some(ConfigData {
+            idle_timeout_mins: settings.idle_timeout_mins,
+            auto_mode: settings.auto_mode,
+        })
+    } else {
+        None
+    };
+
+    AttendancePayload {
+        event_type: event_type.to_string(),
+        user_id: settings.username.clone(),
+        payload: AttendanceData {
+            time: format_current_time(),
+            date: format_current_date(),
+            device_id: settings.device_name.clone(),
+            config,
+        },
+        timestamp: iso_timestamp(),
+    }
+}
+
 // Start the idle monitoring thread
 fn start_idle_monitor(app_handle: AppHandle) {
     let app_handle_clone = app_handle.clone();
@@ -138,13 +179,14 @@ fn start_idle_monitor(app_handle: AppHandle) {
                         *status = AttendanceStatus::CheckedOut;
                     }
                     
-                    // Send check-out event to the API
-                    if let Err(err) = send_to_api("check-out", &settings) {
+                    // Create payload and send check-out event to the API
+                    let payload = create_attendance_payload("check-out", &settings);
+                    if let Err(err) = send_to_api("check-out", &payload).await {
                         error!("Failed to send check-out event: {}", err);
                     }
                     
                     // Notify the frontend
-                    let _ = app_handle_clone.emit_all("attendance_changed", "check-out");
+                    let _ = app_handle_clone.emit("attendance_changed", "check-out");
                 }
             } else {
                 // User is active
@@ -157,13 +199,14 @@ fn start_idle_monitor(app_handle: AppHandle) {
                         *status = AttendanceStatus::CheckedIn;
                     }
                     
-                    // Send check-in event to the API
-                    if let Err(err) = send_to_api("check-in", &settings) {
+                    // Create payload and send check-in event to the API
+                    let payload = create_attendance_payload("check-in", &settings);
+                    if let Err(err) = send_to_api("check-in", &payload).await {
                         error!("Failed to send check-in event: {}", err);
                     }
                     
                     // Notify the frontend
-                    let _ = app_handle_clone.emit_all("attendance_changed", "check-in");
+                    let _ = app_handle_clone.emit("attendance_changed", "check-in");
                 }
                 
                 // Update last activity time
@@ -175,7 +218,7 @@ fn start_idle_monitor(app_handle: AppHandle) {
                     let elapsed = last_activity.elapsed();
                     if elapsed.as_secs() > 60 {
                         debug!("Emitting activity update");
-                        let _ = app_handle_clone.emit_all("activity_update", "");
+                        let _ = app_handle_clone.emit("activity_update", "");
                     }
                 }
             }
@@ -183,68 +226,32 @@ fn start_idle_monitor(app_handle: AppHandle) {
     });
 }
 
-// Process attendance change (check-in or check-out)
-async fn process_attendance_change(app_handle: &AppHandle, event_type: &str, settings: &Settings) -> Result<(), String> {
-    // Emit event to frontend
-    let _ = app_handle.emit("attendance_changed", event_type);
-    
-    // Get current time
-    let now: DateTime<Utc> = Utc::now();
-    
-    // Prepare payload
-    let payload = AttendancePayload {
-        event_type: event_type.to_string(),
-        user_id: settings.username.clone(),
-        payload: AttendanceData {
-            time: now.format("%H:%M:%S").to_string(),
-            date: now.format("%Y-%m-%d").to_string(),
-            device_id: settings.device_name.clone(),
-            config: if settings.developer_mode {
-                Some(ConfigData {
-                    idle_timeout_mins: settings.idle_timeout_mins,
-                    auto_mode: settings.auto_mode,
-                })
-            } else {
-                None
-            },
-        },
-        timestamp: now.to_rfc3339(),
+// Send attendance event to API
+async fn send_to_api(event_type: &str, payload: &AttendancePayload) -> Result<(), String> {
+    // For now, just log the event. In a real implementation, this would send an HTTP request.
+    let payload_str = match serde_json::to_string(payload) {
+        Ok(s) => s,
+        Err(_) => "failed to serialize payload".to_string()
     };
     
-    // Send to API (in a real implementation, handle errors and offline mode)
-    if let Err(e) = send_to_api(&settings.api_endpoint, &payload).await {
-        println!("Error sending to API: {}", e);
-        // In a real implementation, store for later sending
-    }
+    info!("Sending {} event to API: {}", event_type, payload_str);
+    
+    // Simulate API request
+    // In a real implementation, use a proper HTTP client like reqwest
+    tokio::time::sleep(Duration::from_millis(100)).await;
     
     Ok(())
 }
 
-// Send payload to API
-async fn send_to_api(endpoint: &str, payload: &AttendancePayload) -> Result<(), String> {
-    // In a real implementation, use HTTP client to send request
-    // For now, just log the attempt to the console for testing
-    println!("Would send to API: {} with event: {}", endpoint, payload.event_type);
-    println!("Payload: {}", serde_json::to_string(payload).unwrap_or_default());
-    
-    // Mock successful response
-    Ok(())
-}
-
-/// Check-in or check-out manually
+// Send attendance event
 #[tauri::command]
-async fn send_attendance_event(event_type: String, app_handle: AppHandle) -> Result<(), String> {
-    let state: State<Arc<AppState>> = app_handle.state();
-    
+async fn send_attendance_event(event_type: String, app_handle: AppHandle, state: State<Arc<AppState>>) -> Result<(), String> {
     // Get settings
     let settings = {
         state.settings.lock().unwrap().clone()
     };
     
-    // Process the attendance change
-    process_attendance_change(&app_handle, &event_type, &settings).await?;
-    
-    // Update state
+    // Update status in state
     {
         let mut status = state.status.lock().unwrap();
         *status = if event_type == "check-in" {
@@ -254,10 +261,17 @@ async fn send_attendance_event(event_type: String, app_handle: AppHandle) -> Res
         };
     }
     
+    // Create payload and send to API
+    let payload = create_attendance_payload(&event_type, &settings);
+    send_to_api(&event_type, &payload).await?;
+    
+    // Notify the frontend
+    let _ = app_handle.emit("attendance_changed", &event_type);
+    
     Ok(())
 }
 
-/// Get the current attendance status
+// Get current attendance status
 #[tauri::command]
 fn get_attendance_status(state: State<Arc<AppState>>) -> String {
     let status = state.status.lock().unwrap();
@@ -267,25 +281,25 @@ fn get_attendance_status(state: State<Arc<AppState>>) -> String {
     }
 }
 
-/// Get application configuration
+// Get app configuration
 #[tauri::command]
 fn get_app_config(state: State<Arc<AppState>>) -> Settings {
     state.settings.lock().unwrap().clone()
 }
 
-/// Get application version
+// Get app version
 #[tauri::command]
 fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-/// Open settings window
+// Open settings window
 #[tauri::command]
-fn open_settings(_app_handle: AppHandle) -> Result<(), String> {
+fn open_settings() -> Result<(), String> {
     Ok(())
 }
 
-/// Save application settings
+// Save settings
 #[tauri::command]
 fn save_settings(settings: Settings, state: State<Arc<AppState>>) -> Result<(), String> {
     let mut settings_lock = state.settings.lock().unwrap();
@@ -296,7 +310,7 @@ fn save_settings(settings: Settings, state: State<Arc<AppState>>) -> Result<(), 
 
 // Configure auto launch
 fn configure_auto_launch(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+    use tauri_plugin_autostart::ManagerExt;
     
     let autostart_manager = app.autolaunch();
     
