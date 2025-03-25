@@ -6,6 +6,7 @@ use tokio::time;
 use user_idle::UserIdle;
 use chrono::{DateTime, Utc};
 use serde_json;
+use log::{info, warn, error, debug};
 
 // Attendance status
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -94,6 +95,8 @@ fn start_idle_monitor(app_handle: AppHandle) {
         let state: State<Arc<AppState>> = app_handle_clone.state();
         let mut interval = time::interval(Duration::from_secs(1));
         
+        debug!("Idle monitor thread started");
+        
         loop {
             interval.tick().await;
             
@@ -110,7 +113,10 @@ fn start_idle_monitor(app_handle: AppHandle) {
             // Get the idle time using the correct API
             let idle_duration = match UserIdle::get_time() {
                 Ok(idle_info) => idle_info.duration(),
-                Err(_) => continue,
+                Err(e) => {
+                    error!("Failed to get idle time: {}", e);
+                    continue;
+                }
             };
             
             // Get current status
@@ -122,33 +128,55 @@ fn start_idle_monitor(app_handle: AppHandle) {
             let idle_timeout = Duration::from_secs(settings.idle_timeout_mins * 60);
             
             // Check if the user is idle
-            if idle_duration > idle_timeout && current_status == AttendanceStatus::CheckedIn {
-                // User is idle beyond threshold, check out
-                if let Err(e) = process_attendance_change(&app_handle_clone, "check-out", &settings).await {
-                    println!("Error processing check-out: {}", e);
+            if idle_duration >= idle_timeout {
+                if current_status == AttendanceStatus::CheckedIn {
+                    info!("User is idle for {} seconds. Automatically checking out", idle_duration.as_secs());
+                    
+                    // Update status in state
+                    {
+                        let mut status = state.status.lock().unwrap();
+                        *status = AttendanceStatus::CheckedOut;
+                    }
+                    
+                    // Send check-out event to the API
+                    if let Err(err) = send_to_api("check-out", &settings) {
+                        error!("Failed to send check-out event: {}", err);
+                    }
+                    
+                    // Notify the frontend
+                    let _ = app_handle_clone.emit_all("attendance_changed", "check-out");
                 }
-                
-                // Update status in state
-                {
-                    let mut status = state.status.lock().unwrap();
-                    *status = AttendanceStatus::CheckedOut;
-                }
-            } else if idle_duration < Duration::from_secs(1) && current_status == AttendanceStatus::CheckedOut {
-                // User is active, check in
-                if let Err(e) = process_attendance_change(&app_handle_clone, "check-in", &settings).await {
-                    println!("Error processing check-in: {}", e);
-                }
-                
-                // Update status in state
-                {
-                    let mut status = state.status.lock().unwrap();
-                    *status = AttendanceStatus::CheckedIn;
+            } else {
+                // User is active
+                if current_status == AttendanceStatus::CheckedOut {
+                    info!("User activity detected after being idle. Automatically checking in");
+                    
+                    // Update status in state
+                    {
+                        let mut status = state.status.lock().unwrap();
+                        *status = AttendanceStatus::CheckedIn;
+                    }
+                    
+                    // Send check-in event to the API
+                    if let Err(err) = send_to_api("check-in", &settings) {
+                        error!("Failed to send check-in event: {}", err);
+                    }
+                    
+                    // Notify the frontend
+                    let _ = app_handle_clone.emit_all("attendance_changed", "check-in");
                 }
                 
                 // Update last activity time
                 {
                     let mut last_activity = state.last_activity.lock().unwrap();
                     *last_activity = Instant::now();
+                    
+                    // Emit activity update event every 60 seconds
+                    let elapsed = last_activity.elapsed();
+                    if elapsed.as_secs() > 60 {
+                        debug!("Emitting activity update");
+                        let _ = app_handle_clone.emit_all("activity_update", "");
+                    }
                 }
             }
         }
@@ -274,6 +302,7 @@ fn configure_auto_launch(app: &tauri::App) -> Result<(), Box<dyn std::error::Err
     
     // Enable auto-launch by default
     if let Ok(false) = autostart_manager.is_enabled() {
+        info!("Enabling auto-launch at startup");
         let _ = autostart_manager.enable();
     }
     
@@ -319,14 +348,17 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None // No extra args
         ))
+        .plugin(tauri_plugin_log::Builder::default().build())
         .setup(|app| {
+            info!("Starting Remodance v{}", env!("CARGO_PKG_VERSION"));
+            
             // Start idle monitor
             let app_handle = app.handle().clone(); // Clone to get owned AppHandle
             start_idle_monitor(app_handle);
             
             // Configure auto-launch
             if let Err(err) = configure_auto_launch(app) {
-                eprintln!("Failed to configure auto-launch: {}", err);
+                error!("Failed to configure auto-launch: {}", err);
             }
             
             Ok(())
@@ -344,4 +376,55 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Local;
+
+    #[test]
+    fn test_app_state_default() {
+        let state = AppState::default();
+        assert_eq!(*state.status.lock().unwrap(), AttendanceStatus::CheckedOut);
+    }
+
+    #[test]
+    fn test_create_attendance_payload() {
+        let settings = Settings {
+            api_endpoint: "https://example.com/api".to_string(),
+            username: "testuser".to_string(),
+            device_name: "testdevice".to_string(),
+            idle_timeout_mins: 10,
+            auto_mode: true,
+            developer_mode: false,
+        };
+
+        let payload = create_attendance_payload("check-in", &settings);
+        
+        assert_eq!(payload.user_id, "testuser");
+        assert_eq!(payload.device_id, "testdevice");
+        
+        // Validate time format (HH:MM:SS)
+        let time_parts: Vec<&str> = payload.time.split(':').collect();
+        assert_eq!(time_parts.len(), 3);
+        
+        // Validate date format (YYYY-MM-DD)
+        let date_parts: Vec<&str> = payload.date.split('-').collect();
+        assert_eq!(date_parts.len(), 3);
+    }
+
+    #[test]
+    fn test_format_current_time() {
+        let now = Local::now();
+        let formatted = format_current_time();
+        assert_eq!(formatted, now.format("%H:%M:%S").to_string());
+    }
+
+    #[test]
+    fn test_format_current_date() {
+        let now = Local::now();
+        let formatted = format_current_date();
+        assert_eq!(formatted, now.format("%Y-%m-%d").to_string());
+    }
 } 
