@@ -15,7 +15,21 @@ jobs:
         platform: [windows-latest, macos-latest, ubuntu-latest]
         include:
           - platform: ubuntu-latest
-            ADDITIONAL_APT: libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf webkit2gtk3-devel
+            ADDITIONAL_APT: >-
+              libgtk-3-dev
+              libwebkit2gtk-4.1-dev
+              libappindicator3-dev
+              librsvg2-dev
+              patchelf
+              libx11-dev
+              libxss-dev
+              libxext-dev
+              libxcb1-dev
+              libxrandr-dev
+              libxinerama-dev
+              libxcursor-dev
+              libxi-dev
+              pkg-config
 
     runs-on: ${{ matrix.platform }}
     steps:
