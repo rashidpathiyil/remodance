@@ -7,6 +7,7 @@ use user_idle::UserIdle;
 use chrono::Local;
 use serde_json;
 use log::{info, error, debug};
+use reqwest;
 
 // Attendance status
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -182,7 +183,7 @@ fn start_idle_monitor(app_handle: AppHandle) {
                     
                     // Create payload and send check-out event to the API
                     let payload = create_attendance_payload("check-out", &settings);
-                    if let Err(err) = send_to_api("check-out", &payload).await {
+                    if let Err(err) = send_to_api("check-out", &payload, &settings).await {
                         error!("Failed to send check-out event: {}", err);
                     }
                     
@@ -202,7 +203,7 @@ fn start_idle_monitor(app_handle: AppHandle) {
                     
                     // Create payload and send check-in event to the API
                     let payload = create_attendance_payload("check-in", &settings);
-                    if let Err(err) = send_to_api("check-in", &payload).await {
+                    if let Err(err) = send_to_api("check-in", &payload, &settings).await {
                         error!("Failed to send check-in event: {}", err);
                     }
                     
@@ -228,19 +229,38 @@ fn start_idle_monitor(app_handle: AppHandle) {
 }
 
 // Send attendance event to API
-async fn send_to_api(event_type: &str, payload: &AttendancePayload) -> Result<(), String> {
-    // For now, just log the event. In a real implementation, this would send an HTTP request.
+async fn send_to_api(event_type: &str, payload: &AttendancePayload, settings: &Settings) -> Result<(), String> {
+    // Serialize the payload to JSON
     let payload_str = match serde_json::to_string(payload) {
         Ok(s) => s,
-        Err(_) => "failed to serialize payload".to_string()
+        Err(e) => return Err(format!("Failed to serialize payload: {}", e))
     };
     
     info!("Sending {} event to API: {}", event_type, payload_str);
     
-    // Simulate API request
-    // In a real implementation, use a proper HTTP client like reqwest
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Get API endpoint from settings
+    let api_endpoint = &settings.api_endpoint;
     
+    // Send the actual HTTP request
+    let client = reqwest::Client::new();
+    let response = client.post(api_endpoint)
+        .header("Content-Type", "application/json")
+        .body(payload_str)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to send request: {}", e))?;
+    
+    // Check if the request was successful
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response.text().await
+            .unwrap_or_else(|_| "Failed to get error details".to_string());
+        
+        error!("API request failed with status {}: {}", status, error_text);
+        return Err(format!("API request failed with status {}", status));
+    }
+    
+    info!("Successfully sent {} event to API", event_type);
     Ok(())
 }
 
@@ -264,7 +284,7 @@ async fn send_attendance_event(event_type: String, app_handle: AppHandle, state:
     
     // Create payload and send to API
     let payload = create_attendance_payload(&event_type, &settings);
-    send_to_api(&event_type, &payload).await?;
+    send_to_api(&event_type, &payload, &settings).await?;
     
     // Notify the frontend
     let _ = app_handle.emit("attendance_changed", &event_type);
