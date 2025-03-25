@@ -4,10 +4,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::time;
 use user_idle::UserIdle;
-use chrono::Local;
+use chrono::{Utc, Local};
 use serde_json;
 use log::{info, error, debug};
 use reqwest;
+use tauri_plugin_store::StoreBuilder;
+
+// Constants
+const SETTINGS_FILENAME: &str = "settings.json";
 
 // Attendance status
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -19,24 +23,6 @@ enum AttendanceStatus {
 impl Default for AttendanceStatus {
     fn default() -> Self {
         Self::CheckedOut
-    }
-}
-
-// Store application state
-#[derive(Debug)]
-struct AppState {
-    status: Mutex<AttendanceStatus>,
-    last_activity: Mutex<Instant>,
-    settings: Mutex<Settings>,
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self {
-            status: Mutex::new(AttendanceStatus::default()),
-            last_activity: Mutex::new(Instant::now()),
-            settings: Mutex::new(Settings::default()),
-        }
     }
 }
 
@@ -63,6 +49,26 @@ impl Default for Settings {
     }
 }
 
+// Store application state
+#[derive(Debug)]
+struct AppState {
+    status: Mutex<AttendanceStatus>,
+    last_activity: Mutex<Instant>,
+    settings: Mutex<Settings>,
+    manual_checkout: Mutex<bool>, // Track if checkout was manual
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            status: Mutex::new(AttendanceStatus::default()),
+            last_activity: Mutex::new(Instant::now()),
+            settings: Mutex::new(Settings::default()),
+            manual_checkout: Mutex::new(false),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct AttendancePayload {
     event_type: String,
@@ -84,48 +90,6 @@ struct AttendanceData {
 struct ConfigData {
     idle_timeout_mins: u64,
     auto_mode: bool,
-}
-
-// Helper to create the current ISO timestamp
-fn iso_timestamp() -> String {
-    use chrono::Utc;
-    Utc::now().to_rfc3339()
-}
-
-// Format current time as HH:MM:SS
-fn format_current_time() -> String {
-    use chrono::Local;
-    Local::now().format("%H:%M:%S").to_string()
-}
-
-// Format current date as YYYY-MM-DD
-fn format_current_date() -> String {
-    use chrono::Local;
-    Local::now().format("%Y-%m-%d").to_string()
-}
-
-// Create attendance payload from settings
-fn create_attendance_payload(event_type: &str, settings: &Settings) -> AttendancePayload {
-    let config = if settings.developer_mode {
-        Some(ConfigData {
-            idle_timeout_mins: settings.idle_timeout_mins,
-            auto_mode: settings.auto_mode,
-        })
-    } else {
-        None
-    };
-
-    AttendancePayload {
-        event_type: event_type.to_string(),
-        user_id: settings.username.clone(),
-        payload: AttendanceData {
-            time: format_current_time(),
-            date: format_current_date(),
-            device_id: settings.device_name.clone(),
-            config,
-        },
-        timestamp: iso_timestamp(),
-    }
 }
 
 // Start the idle monitoring thread
@@ -193,22 +157,31 @@ fn start_idle_monitor(app_handle: AppHandle) {
             } else {
                 // User is active
                 if current_status == AttendanceStatus::CheckedOut {
-                    info!("User activity detected after being idle. Automatically checking in");
+                    // Check if the checkout was manual
+                    let was_manual_checkout = {
+                        let manual_checkout = state.manual_checkout.lock().unwrap();
+                        *manual_checkout
+                    };
                     
-                    // Update status in state
-                    {
-                        let mut status = state.status.lock().unwrap();
-                        *status = AttendanceStatus::CheckedIn;
+                    // Only auto check-in if the checkout wasn't manual
+                    if !was_manual_checkout {
+                        info!("User activity detected after being idle. Automatically checking in");
+                        
+                        // Update status in state
+                        {
+                            let mut status = state.status.lock().unwrap();
+                            *status = AttendanceStatus::CheckedIn;
+                        }
+                        
+                        // Create payload and send check-in event to the API
+                        let payload = create_attendance_payload("check-in", &settings);
+                        if let Err(err) = send_to_api("check-in", &payload, &settings).await {
+                            error!("Failed to send check-in event: {}", err);
+                        }
+                        
+                        // Notify the frontend
+                        let _ = app_handle_clone.emit("attendance_changed", "check-in");
                     }
-                    
-                    // Create payload and send check-in event to the API
-                    let payload = create_attendance_payload("check-in", &settings);
-                    if let Err(err) = send_to_api("check-in", &payload, &settings).await {
-                        error!("Failed to send check-in event: {}", err);
-                    }
-                    
-                    // Notify the frontend
-                    let _ = app_handle_clone.emit("attendance_changed", "check-in");
                 }
                 
                 // Update last activity time
@@ -264,6 +237,63 @@ async fn send_to_api(event_type: &str, payload: &AttendancePayload, settings: &S
     Ok(())
 }
 
+// Helper to load settings from disk
+async fn load_settings_from_store(app_handle: &AppHandle) -> Settings {
+    let store_path = std::path::PathBuf::from(SETTINGS_FILENAME);
+    
+    // Try to create and load the store
+    match StoreBuilder::new(app_handle, store_path).build() {
+        Ok(store) => {
+            if let Err(err) = store.reload() {
+                error!("Failed to load store: {}. Using defaults.", err);
+                return Settings::default();
+            }
+            
+            match store.get("settings") {
+                Some(settings_value) => {
+                    if let Ok(settings) = serde_json::from_value(settings_value.clone()) {
+                        info!("Loaded settings from disk");
+                        return settings;
+                    }
+                }
+                None => {
+                    info!("No settings found in store. Using defaults.");
+                }
+            }
+            Settings::default()
+        },
+        Err(err) => {
+            error!("Failed to create store: {}. Using defaults.", err);
+            Settings::default()
+        }
+    }
+}
+
+// Helper to save settings to disk
+async fn save_settings_to_store(app_handle: &AppHandle, settings: &Settings) -> Result<(), String> {
+    let store_path = std::path::PathBuf::from(SETTINGS_FILENAME);
+    
+    // Try to create and load the store
+    let store = match StoreBuilder::new(app_handle, store_path).build() {
+        Ok(store) => store,
+        Err(err) => return Err(format!("Failed to create store: {}", err)),
+    };
+    
+    // Load existing data if possible (not crucial if it fails for a new store)
+    let _ = store.reload();
+    
+    // Insert settings
+    store.set("settings".to_string(), serde_json::to_value(settings).unwrap());
+    
+    // Save the store
+    if let Err(err) = store.save() {
+        return Err(format!("Failed to save store: {}", err));
+    }
+    
+    info!("Saved settings to disk");
+    Ok(())
+}
+
 // Send attendance event
 #[tauri::command]
 async fn send_attendance_event(event_type: String, app_handle: AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
@@ -276,8 +306,14 @@ async fn send_attendance_event(event_type: String, app_handle: AppHandle, state:
     {
         let mut status = state.status.lock().unwrap();
         *status = if event_type == "check-in" {
+            // If checking in manually, reset the manual checkout flag
+            let mut manual_checkout = state.manual_checkout.lock().unwrap();
+            *manual_checkout = false;
             AttendanceStatus::CheckedIn
         } else {
+            // Mark as manual checkout
+            let mut manual_checkout = state.manual_checkout.lock().unwrap();
+            *manual_checkout = true;
             AttendanceStatus::CheckedOut
         };
     }
@@ -322,9 +358,15 @@ fn open_settings() -> Result<(), String> {
 
 // Save settings
 #[tauri::command]
-fn save_settings(settings: Settings, state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    let mut settings_lock = state.settings.lock().unwrap();
-    *settings_lock = settings;
+async fn save_settings(settings: Settings, app_handle: AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    // Update in-memory settings
+    {
+        let mut settings_lock = state.settings.lock().unwrap();
+        *settings_lock = settings.clone();
+    }
+    
+    // Save settings to disk
+    save_settings_to_store(&app_handle, &settings).await?;
     
     Ok(())
 }
@@ -371,6 +413,45 @@ fn toggle_auto_launch(app_handle: AppHandle, enable: bool) -> Result<(), String>
     }
 }
 
+// Helper to create the current ISO timestamp
+fn iso_timestamp() -> String {
+    Utc::now().to_rfc3339()
+}
+
+// Format current time as HH:MM:SS
+fn format_current_time() -> String {
+    Local::now().format("%H:%M:%S").to_string()
+}
+
+// Format current date as YYYY-MM-DD
+fn format_current_date() -> String {
+    Local::now().format("%Y-%m-%d").to_string()
+}
+
+// Create attendance payload from settings
+fn create_attendance_payload(event_type: &str, settings: &Settings) -> AttendancePayload {
+    let config = if settings.developer_mode {
+        Some(ConfigData {
+            idle_timeout_mins: settings.idle_timeout_mins,
+            auto_mode: settings.auto_mode,
+        })
+    } else {
+        None
+    };
+
+    AttendancePayload {
+        event_type: event_type.to_string(),
+        user_id: settings.username.clone(),
+        payload: AttendanceData {
+            time: format_current_time(),
+            date: format_current_date(),
+            device_id: settings.device_name.clone(),
+            config,
+        },
+        timestamp: iso_timestamp(),
+    }
+}
+
 // Application entry point
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -384,8 +465,21 @@ pub fn run() {
             None // No extra args
         ))
         .plugin(tauri_plugin_log::Builder::default().build())
+        .plugin(tauri_plugin_store::Builder::default().build())
         .setup(|app| {
             info!("Starting Remodance v{}", env!("CARGO_PKG_VERSION"));
+            
+            // Load settings from disk
+            let app_handle = app.handle().clone();
+            let state: State<'_, Arc<AppState>> = app.state();
+            
+            tauri::async_runtime::block_on(async {
+                let loaded_settings = load_settings_from_store(&app_handle).await;
+                
+                // Update app state with loaded settings
+                let mut settings_lock = state.settings.lock().unwrap();
+                *settings_lock = loaded_settings;
+            });
             
             // Start idle monitor
             let app_handle = app.handle().clone(); // Clone to get owned AppHandle

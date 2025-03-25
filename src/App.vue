@@ -145,13 +145,6 @@ async function saveSettings() {
 
 onMounted(() => {
   initApp();
-  
-  // Listen for settings open event
-  invoke("open_settings").then(() => {
-    openSettings();
-  }).catch(() => {
-    // Ignore errors
-  });
 });
 </script>
 
