@@ -2,7 +2,16 @@
 import { ref, onMounted, reactive } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/api/shell";
+
+// Define type for settings/config
+interface AppSettings {
+  api_endpoint: string;
+  username: string;
+  device_name: string;
+  idle_timeout_mins: number;
+  auto_mode: boolean;
+  developer_mode: boolean;
+}
 
 // State variables
 const isCheckedIn = ref(false);
@@ -44,21 +53,21 @@ async function sendAttendanceEvent(eventType: "check-in" | "check-out") {
 async function initApp() {
   try {
     // Get app version
-    appVersion.value = await invoke("get_app_version");
+    appVersion.value = await invoke("get_app_version") as string;
     
     // Listen for auto check-in/check-out events from Rust
-    await listen("attendance_changed", (event) => {
+    await listen("attendance_changed", (event: { payload: unknown }) => {
       isCheckedIn.value = event.payload === "check-in";
     });
     
     // Listen for activity updates
-    await listen("activity_update", (event) => {
+    await listen("activity_update", () => {
       lastActivityTime.value = new Date();
     });
     
     // Initialize app state
-    const config = await invoke("get_app_config");
-    isAutoMode.value = config.autoMode;
+    const config = await invoke("get_app_config") as AppSettings;
+    isAutoMode.value = config.auto_mode;
     
     // Initialize settings
     settings.apiEndpoint = config.api_endpoint;
@@ -69,7 +78,7 @@ async function initApp() {
     settings.developerMode = config.developer_mode;
     
     // Check initial status
-    const status = await invoke("get_attendance_status");
+    const status = await invoke("get_attendance_status") as string;
     isCheckedIn.value = status === "checked-in";
     
     // Get auto-launch status
@@ -82,8 +91,8 @@ async function initApp() {
 // Check auto-launch status
 async function checkAutoLaunchStatus() {
   try {
-    const enabled = await invoke("is_auto_launch_enabled");
-    isAutoLaunchEnabled.value = enabled as boolean;
+    const enabled = await invoke("is_auto_launch_enabled") as boolean;
+    isAutoLaunchEnabled.value = enabled;
   } catch (error) {
     console.error("Failed to check auto-launch status:", error);
   }
