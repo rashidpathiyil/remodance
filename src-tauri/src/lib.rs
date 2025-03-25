@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::time;
 use user_idle::UserIdle;
-use chrono::{DateTime, Utc};
+use chrono::Local;
 use serde_json;
 use log::{info, error, debug};
 
@@ -87,7 +87,8 @@ struct ConfigData {
 
 // Helper to create the current ISO timestamp
 fn iso_timestamp() -> String {
-    chrono::Utc::now().to_rfc3339()
+    use chrono::Utc;
+    Utc::now().to_rfc3339()
 }
 
 // Format current time as HH:MM:SS
@@ -133,7 +134,7 @@ fn start_idle_monitor(app_handle: AppHandle) {
     // Spawn a background task to monitor idle time
     tauri::async_runtime::spawn(async move {
         // Get state inside the async block, using the cloned handle
-        let state: State<Arc<AppState>> = app_handle_clone.state();
+        let state: State<'_, Arc<AppState>> = app_handle_clone.state();
         let mut interval = time::interval(Duration::from_secs(1));
         
         debug!("Idle monitor thread started");
@@ -245,7 +246,7 @@ async fn send_to_api(event_type: &str, payload: &AttendancePayload) -> Result<()
 
 // Send attendance event
 #[tauri::command]
-async fn send_attendance_event(event_type: String, app_handle: AppHandle, state: State<Arc<AppState>>) -> Result<(), String> {
+async fn send_attendance_event(event_type: String, app_handle: AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     // Get settings
     let settings = {
         state.settings.lock().unwrap().clone()
@@ -273,7 +274,7 @@ async fn send_attendance_event(event_type: String, app_handle: AppHandle, state:
 
 // Get current attendance status
 #[tauri::command]
-fn get_attendance_status(state: State<Arc<AppState>>) -> String {
+fn get_attendance_status(state: State<'_, Arc<AppState>>) -> String {
     let status = state.status.lock().unwrap();
     match *status {
         AttendanceStatus::CheckedIn => "checked-in".to_string(),
@@ -283,7 +284,7 @@ fn get_attendance_status(state: State<Arc<AppState>>) -> String {
 
 // Get app configuration
 #[tauri::command]
-fn get_app_config(state: State<Arc<AppState>>) -> Settings {
+fn get_app_config(state: State<'_, Arc<AppState>>) -> Settings {
     state.settings.lock().unwrap().clone()
 }
 
@@ -301,7 +302,7 @@ fn open_settings() -> Result<(), String> {
 
 // Save settings
 #[tauri::command]
-fn save_settings(settings: Settings, state: State<Arc<AppState>>) -> Result<(), String> {
+fn save_settings(settings: Settings, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let mut settings_lock = state.settings.lock().unwrap();
     *settings_lock = settings;
     
@@ -395,7 +396,6 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Local;
 
     #[test]
     fn test_app_state_default() {
@@ -417,14 +417,14 @@ mod tests {
         let payload = create_attendance_payload("check-in", &settings);
         
         assert_eq!(payload.user_id, "testuser");
-        assert_eq!(payload.device_id, "testdevice");
+        assert_eq!(payload.payload.device_id, "testdevice");
         
         // Validate time format (HH:MM:SS)
-        let time_parts: Vec<&str> = payload.time.split(':').collect();
+        let time_parts: Vec<&str> = payload.payload.time.split(':').collect();
         assert_eq!(time_parts.len(), 3);
         
         // Validate date format (YYYY-MM-DD)
-        let date_parts: Vec<&str> = payload.date.split('-').collect();
+        let date_parts: Vec<&str> = payload.payload.date.split('-').collect();
         assert_eq!(date_parts.len(), 3);
     }
 
