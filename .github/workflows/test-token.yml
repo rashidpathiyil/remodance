@@ -14,11 +14,14 @@ jobs:
           fetch-depth: 0
 
       - name: Try pushing a tag with GH_TOKEN
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
-          git remote set-url origin https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git
+
+          echo "Using token: ${GH_TOKEN:0:4}... (redacted for logs)"
+
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git tag test-pat-$(date +%s)
           git push origin --tags
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
