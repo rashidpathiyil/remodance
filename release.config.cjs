@@ -1,5 +1,6 @@
 module.exports = {
   branches: ["main"],
+  repositoryUrl: "https://github.com/rashidpathiyil/remodance.git",
   plugins: [
     "@semantic-release/commit-analyzer",
     "@semantic-release/release-notes-generator",
@@ -7,8 +8,6 @@ module.exports = {
       "@semantic-release/github",
       {
         assets: ["artifacts/**/*"],
-        successComment: false,
-        failComment: false,
       },
     ],
     [
