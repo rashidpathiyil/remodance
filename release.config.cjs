@@ -3,7 +3,14 @@ module.exports = {
   plugins: [
     "@semantic-release/commit-analyzer",
     "@semantic-release/release-notes-generator",
-    "@semantic-release/github",
+    [
+      "@semantic-release/github",
+      {
+        assets: ["artifacts/**/*"],
+        successComment: false,
+        failComment: false,
+      },
+    ],
     [
       "@semantic-release/git",
       {
