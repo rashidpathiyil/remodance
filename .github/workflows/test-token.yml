@@ -1,10 +1,10 @@
-name: Test GITHUB_TOKEN
+name: Test GH_TOKEN Push
 
 on:
   workflow_dispatch:
 
 jobs:
-  test:
+  test-pat:
     runs-on: ubuntu-latest
 
     steps:
@@ -13,11 +13,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Try pushing a tag
+      - name: Try pushing a tag with GH_TOKEN
         run: |
-          git config --global user.name "GitHub Actions"
+          git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
-          git tag test-token-$(date +%s)
+          git remote set-url origin https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git
+          git tag test-pat-$(date +%s)
           git push origin --tags
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
