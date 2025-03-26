@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [windows-latest, macos-latest, ubuntu-latest, fedora-latest]
+        platform: [windows-latest, macos-latest, ubuntu-latest]
         include:
           - platform: ubuntu-latest
             ADDITIONAL_APT: >-
@@ -28,22 +28,6 @@ jobs:
               libxcursor-dev
               libxi-dev
               pkg-config
-          - platform: fedora-latest
-            ADDITIONAL_DNF: >-
-              gtk3-devel
-              webkit2gtk4.1-devel
-              libappindicator-gtk3-devel
-              librsvg2-devel
-              patchelf
-              libX11-devel
-              libXScrnSaver-devel
-              libXext-devel
-              libxcb-devel
-              libXrandr-devel
-              libXinerama-devel
-              libXcursor-devel
-              libXi-devel
-              pkgconf-pkg-config
 
     runs-on: ${{ matrix.platform }}
 
@@ -72,12 +56,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ${{ matrix.ADDITIONAL_APT }}
-
-      - name: Install Fedora dependencies
-        if: matrix.platform == 'fedora-latest'
-        run: |
-          sudo dnf check-update || true
-          sudo dnf install -y ${{ matrix.ADDITIONAL_DNF }}
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
