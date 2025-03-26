@@ -8,15 +8,15 @@ module.exports = {
       "@semantic-release/github",
       {
         assets: [
-          "artifacts/**/*.dmg",
-          "artifacts/**/*.deb",
-          "artifacts/**/*.AppImage",
-          "artifacts/**/*.rpm",
-          "artifacts/**/*.msi",
-          "artifacts/**/*.exe",
-          "artifacts/**/*.pdb",
-          "artifacts/**/*.json",
-          "artifacts/**/remodance*"
+          "release-assets/*.dmg",
+          "release-assets/*.deb",
+          "release-assets/*.AppImage",
+          "release-assets/*.rpm",
+          "release-assets/*.msi",
+          "release-assets/*.exe",
+          "release-assets/*.pdb",
+          "release-assets/*.json",
+          "release-assets/remodance*"
         ],
       },
     ],
